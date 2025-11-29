@@ -10,6 +10,9 @@ export default defineConfig({
     port: 3000
   },
   build: {
-    outDir: 'dist'
-  }
+    outDir: 'dist',
+    assetsDir: 'assets'
+  },
+  // 使用相对路径，确保在任何子目录下都能正确加载资源
+  base: './'
 })
