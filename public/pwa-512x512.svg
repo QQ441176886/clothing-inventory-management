@@ -1,0 +1,5 @@
+<svg width="512" height="512" xmlns="http://www.w3.org/2000/svg">
+  <rect width="512" height="512" fill="#4f46e5"/>
+  <text x="256" y="270" text-anchor="middle" fill="white" font-size="64" font-family="Arial">👕</text>
+  <text x="256" y="350" text-anchor="middle" fill="white" font-size="32" font-family="Arial">服装管理</text>
+</svg>
