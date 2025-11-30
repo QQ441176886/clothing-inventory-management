@@ -202,10 +202,13 @@ const Settings = () => {
           importedCount += dataToImport.stockOut.length
         }
         
-        setImportStatus(`数据导入成功！共导入 ${importedCount} 条记录，页面将刷新...`)
-        setTimeout(() => {
-          window.location.reload()
-        }, 2000)
+        // 导入成功后，触发父组件的数据刷新机制
+        if (props.refreshData) {
+          props.refreshData()
+        }
+        
+        setImportStatus(`数据导入成功！共导入 ${importedCount} 条记录`)
+        setTimeout(() => setImportStatus(''), 3000)
       } catch (error) {
         console.error('导入数据失败:', error)
         
