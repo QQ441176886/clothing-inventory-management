@@ -186,21 +186,24 @@ const StockIn = ({ refreshStats }) => {
                 updatedAt: new Date()
               })
               
-              // 更新库存
-              const existingInventory = await db.inventory.where('clothingId').equals(clothingId).first()
-              if (existingInventory) {
-                await db.inventory.update(existingInventory.id, {
-                  quantity: existingInventory.quantity + quantity,
-                  updatedAt: new Date()
+              // 更新库存 - 使用modify确保原子操作
+              await db.inventory
+                .where('clothingId')
+                .equals(clothingId)
+                .modify(inventory => {
+                  inventory.quantity += quantity;
+                  inventory.updatedAt = new Date();
                 })
-              } else {
-                // 如果库存记录不存在，创建新的
-                await db.inventory.add({
-                  clothingId: clothingId,
-                  quantity: quantity,
-                  updatedAt: new Date()
-                })
-              }
+                .then(updated => {
+                  if (updated === 0) {
+                    // 如果没有找到库存记录，创建新的
+                    return db.inventory.add({
+                      clothingId: clothingId,
+                      quantity: quantity,
+                      updatedAt: new Date()
+                    });
+                  }
+                });
             } else {
               // 创建新的服装记录
               clothingId = await db.clothes.add({

@@ -4,15 +4,19 @@ import { db } from '../db/database'
 
 const Inventory = ({ refreshStats }) => {
   const [inventory, setInventory] = useState([])
-  const [lowStockThreshold, setLowStockThreshold] = useState(10) // 默认值
+  const [lowStockThreshold, setLowStockThreshold] = useState(1) // 默认值
   const [showInventoryDetails, setShowInventoryDetails] = useState(false)
   const [showLowStockDetails, setShowLowStockDetails] = useState(false)
   const [showOutOfStockDetails, setShowOutOfStockDetails] = useState(false)
+  
+
+  
+
 
   useEffect(() => {
     loadInventory()
     loadLowStockThreshold()
-  }, [])
+  }, [refreshStats])
   
   // 从系统设置中加载低库存阈值
   const loadLowStockThreshold = async () => {
@@ -42,8 +46,10 @@ const Inventory = ({ refreshStats }) => {
           clothing: clothing || {},
           totalValue: Math.round(totalValue * 100) / 100 // 确保总价值精度
         }
-      }).filter(item => item.clothing.id) // 过滤掉没有对应服装的库存记录
-      .sort((a, b) => {
+      }).filter(item => {
+        // 过滤掉没有对应服装的库存记录
+        return item.clothing.id;
+      }).sort((a, b) => {
         // 按服装编码排序
         if (a.clothing.code && b.clothing.code) {
           return a.clothing.code.localeCompare(b.clothing.code)
@@ -86,6 +92,8 @@ const Inventory = ({ refreshStats }) => {
           <Warehouse size={24} />
           库存查询
         </h1>
+        
+
       </div>
 
       {/* 库存列表 - 点击总库存卡片后显示 */}

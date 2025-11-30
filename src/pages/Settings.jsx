@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Settings as SettingsIcon, Download, Upload, Database, AlertTriangle, AlertCircle, Save } from 'lucide-react'
 import { db } from '../db/database'
 
 const Settings = () => {
+  const navigate = useNavigate()
   const [exportStatus, setExportStatus] = useState('')
   const [importStatus, setImportStatus] = useState('')
   const [lowStockThreshold, setLowStockThreshold] = useState('')
@@ -64,12 +66,24 @@ const Settings = () => {
       const stockIn = await db.stockIn.toArray()
       const stockOut = await db.stockOut.toArray()
       
+      // 创建库存映射，用于快速查找服装对应的库存数量
+      const inventoryMap = new Map()
+      inventory.forEach(item => {
+        inventoryMap.set(item.clothingId, item.quantity)
+      })
+      
+      // 将库存数量合并到服装数据中
+      const clothesWithInventory = clothes.map(clothing => ({
+        ...clothing,
+        quantity: inventoryMap.get(clothing.id) || 0
+      }))
+      
       // 创建备份对象
       const backupData = {
         version: '1.0',
         timestamp: new Date().toISOString(),
         data: {
-          clothes,
+          clothes: clothesWithInventory,
           inventory,
           stockIn,
           stockOut
@@ -176,39 +190,249 @@ const Settings = () => {
           throw new Error('备份文件中没有找到有效的数据')
         }
         
-        // 清空现有数据
-        await db.clothes.clear()
-        await db.inventory.clear()
-        await db.stockIn.clear()
-        await db.stockOut.clear()
-        
         // 导入新数据 - 添加错误处理
         let importedCount = 0
         
+        // 只清空要导入的数据表，保留其他表的数据
+        let clothesIdMap = new Map() // 用于映射原始clothes id到新导入的clothes id
+        
         if (dataToImport.clothes && Array.isArray(dataToImport.clothes)) {
-          await db.clothes.bulkAdd(dataToImport.clothes)
-          importedCount += dataToImport.clothes.length
+          // 先保存现有的库存记录（如果有的话），以便后续关联
+          const existingInventory = await db.inventory.toArray()
+          
+          await db.clothes.clear()
+          await db.inventory.clear()
+          
+          // 如果导入服装数据，也需要清空依赖它的入库和出库记录
+          // 因为新的服装会有新的ID，旧的入库出库记录会无法关联
+          if (dataToImport.stockIn || dataToImport.stockOut) {
+            // 如果同时导入了stockIn数据，先清空现有入库记录
+            await db.stockIn.clear()
+          }
+          
+          if (dataToImport.stockOut || dataToImport.stockIn) {
+            // 如果同时导入了stockOut数据，先清空现有出库记录
+            await db.stockOut.clear()
+          }
+          
+          // 移除导入数据中的id字段，并处理重复的code+color+size组合
+          const clothesWithoutIds = dataToImport.clothes.map(clothing => {
+            const { id, ...clothingWithoutId } = clothing
+            return clothingWithoutId
+          })
+          
+          // 使用Map去重，key为code+color+size的组合
+          const uniqueClothesMap = new Map()
+          clothesWithoutIds.forEach(clothing => {
+            const key = `${clothing.code}-${clothing.color}-${clothing.size}`
+            // 如果有重复，保留最后一个
+            uniqueClothesMap.set(key, clothing)
+          })
+          
+          const uniqueClothes = Array.from(uniqueClothesMap.values())
+          
+          // 逐个添加，而不是批量添加，以更好地处理可能的冲突
+          for (const clothing of uniqueClothes) {
+            try {
+              const originalId = dataToImport.clothes.find(c => 
+                c.code === clothing.code && c.color === clothing.color && c.size === clothing.size
+              )?.id
+              
+              const newId = await db.clothes.add(clothing)
+              importedCount++
+              
+              // 记录原始id到新id的映射
+              if (originalId) {
+                clothesIdMap.set(originalId, newId)
+              }
+            } catch (error) {
+              console.warn('跳过重复或无效的服装记录:', clothing, error)
+            }
+          }
         }
+        
         if (dataToImport.inventory && Array.isArray(dataToImport.inventory)) {
-          await db.inventory.bulkAdd(dataToImport.inventory)
-          importedCount += dataToImport.inventory.length
+          // 如果没有先导入clothes数据，先清空inventory表
+          if (!dataToImport.clothes) {
+            await db.inventory.clear()
+          }
+          
+          // 处理inventory数据
+          for (const inventoryItem of dataToImport.inventory) {
+            try {
+              const { id, clothingId, ...inventoryWithoutId } = inventoryItem
+              
+              // 获取正确的clothingId
+              let correctClothingId = clothingId
+              
+              // 如果有id映射表，使用映射后的id
+              if (clothesIdMap.has(clothingId)) {
+                correctClothingId = clothesIdMap.get(clothingId)
+              } else {
+                // 否则检查clothingId是否存在
+                const clothingExists = await db.clothes.get(correctClothingId)
+                if (!clothingExists) {
+                  // 如果clothingId不存在，尝试通过code+color+size查找
+                  const clothing = await db.clothes.where({ 
+                    code: inventoryItem.code, 
+                    color: inventoryItem.color, 
+                    size: inventoryItem.size 
+                  }).first()
+                  
+                  if (clothing) {
+                    correctClothingId = clothing.id
+                  } else {
+                    // 如果找不到对应的服装记录，跳过这个库存记录
+                    console.warn('跳过无效的库存记录，找不到对应的服装:', inventoryItem)
+                    continue
+                  }
+                }
+              }
+              
+              await db.inventory.add({
+                ...inventoryWithoutId,
+                clothingId: correctClothingId,
+                updatedAt: new Date()
+              })
+              importedCount++
+            } catch (error) {
+              console.warn('跳过重复或无效的库存记录:', inventoryItem, error)
+            }
+          }
         }
+        
         if (dataToImport.stockIn && Array.isArray(dataToImport.stockIn)) {
-          await db.stockIn.bulkAdd(dataToImport.stockIn)
-          importedCount += dataToImport.stockIn.length
+          // 处理stockIn数据
+          // 先清空现有入库记录，确保只显示新导入的数据
+          await db.stockIn.clear()
+          
+          for (const stockInItem of dataToImport.stockIn) {
+            try {
+              const { id, clothingId, ...stockInWithoutId } = stockInItem
+              
+              // 获取正确的clothingId
+              let correctClothingId = clothingId
+              
+              // 如果有id映射表，使用映射后的id
+              if (clothesIdMap.has(clothingId)) {
+                correctClothingId = clothesIdMap.get(clothingId)
+              } else {
+                // 否则检查clothingId是否存在
+                const clothingExists = await db.clothes.get(correctClothingId)
+                if (!clothingExists) {
+                  // 如果clothingId不存在，尝试通过code+color+size查找
+                  let clothing = await db.clothes.where({ 
+                    code: stockInItem.code, 
+                    color: stockInItem.color, 
+                    size: stockInItem.size 
+                  }).first()
+                  
+                  if (clothing) {
+                    correctClothingId = clothing.id
+                  } else {
+                    // 如果找不到对应的服装记录，尝试从入库记录创建新的服装记录
+                    if (stockInItem.code && stockInItem.name) {
+                      // 创建新的服装记录
+                      correctClothingId = await db.clothes.add({
+                        code: stockInItem.code,
+                        name: stockInItem.name,
+                        category: stockInItem.category || '默认分类',
+                        size: stockInItem.size || '未设置',
+                        color: stockInItem.color || '未设置',
+                        purchasePrice: stockInItem.purchasePrice || 0,
+                        sellingPrice: stockInItem.sellingPrice || 0,
+                        // 其他必要的服装字段可以根据实际情况添加
+                      })
+                      importedCount++
+                    } else {
+                      // 如果没有足够的信息创建服装记录，跳过这个入库记录
+                      console.warn('跳过无效的入库记录，缺少创建服装所需的信息:', stockInItem)
+                      continue
+                    }
+                  }
+                }
+              }
+              
+              await db.stockIn.add({
+                ...stockInWithoutId,
+                clothingId: correctClothingId,
+                date: stockInItem.date || new Date()
+              })
+              importedCount++
+            } catch (error) {
+              console.warn('跳过重复或无效的入库记录:', stockInItem, error)
+            }
+          }
         }
+        
         if (dataToImport.stockOut && Array.isArray(dataToImport.stockOut)) {
-          await db.stockOut.bulkAdd(dataToImport.stockOut)
-          importedCount += dataToImport.stockOut.length
+          // 处理stockOut数据
+          for (const stockOutItem of dataToImport.stockOut) {
+            try {
+              const { id, clothingId, ...stockOutWithoutId } = stockOutItem
+              
+              // 获取正确的clothingId
+              let correctClothingId = clothingId
+              
+              // 如果有id映射表，使用映射后的id
+              if (clothesIdMap.has(clothingId)) {
+                correctClothingId = clothesIdMap.get(clothingId)
+              } else {
+                // 否则检查clothingId是否存在
+                const clothingExists = await db.clothes.get(correctClothingId)
+                if (!clothingExists) {
+                  // 如果clothingId不存在，尝试通过code+color+size查找
+                  const clothing = await db.clothes.where({ 
+                    code: stockOutItem.code, 
+                    color: stockOutItem.color, 
+                    size: stockOutItem.size 
+                  }).first()
+                  
+                  if (clothing) {
+                    correctClothingId = clothing.id
+                  } else {
+                    // 如果找不到对应的服装记录，跳过这个出库记录
+                    console.warn('跳过无效的出库记录，找不到对应的服装:', stockOutItem)
+                    continue
+                  }
+                }
+              }
+              
+              await db.stockOut.add({
+                ...stockOutWithoutId,
+                clothingId: correctClothingId,
+                date: stockOutItem.date || new Date()
+              })
+              importedCount++
+            } catch (error) {
+              console.warn('跳过重复或无效的出库记录:', stockOutItem, error)
+            }
+          }
         }
         
-        // 导入成功后，触发父组件的数据刷新机制
-        if (props.refreshData) {
-          props.refreshData()
+        // 如果只导入了clothes数据，为每款服装创建库存记录
+        if (dataToImport.clothes && Array.isArray(dataToImport.clothes) && 
+            (!dataToImport.inventory || !Array.isArray(dataToImport.inventory))) {
+          const allClothes = await db.clothes.toArray()
+          for (const clothing of allClothes) {
+            const existingInventory = await db.inventory.where({ clothingId: clothing.id }).first()
+            if (!existingInventory) {
+              // 尝试从服装数据中获取库存数量（如果存在的话），否则使用默认值0
+              const inventoryQuantity = clothing.quantity || 0
+              await db.inventory.add({
+                clothingId: clothing.id,
+                quantity: inventoryQuantity,
+                updatedAt: new Date()
+              })
+              importedCount++
+            }
+          }
         }
-        
-        setImportStatus(`数据导入成功！共导入 ${importedCount} 条记录`)
-        setTimeout(() => setImportStatus(''), 3000)
+
+        setImportStatus(`数据导入成功！共导入 ${importedCount} 条记录，页面将刷新...`)
+        setTimeout(() => {
+          window.location.reload()
+        }, 2000)
       } catch (error) {
         console.error('导入数据失败:', error)
         
@@ -250,6 +474,22 @@ const Settings = () => {
         gap: '12px',
         marginBottom: '32px'
       }}>
+        <button
+          type="button"
+          onClick={() => navigate('/dashboard')}
+          style={{
+            padding: '8px 16px',
+            background: '#f8f9fa',
+            color: '#6c757d',
+            border: '1px solid #dee2e6',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            fontSize: '14px',
+            fontWeight: '500'
+          }}
+        >
+          ← 返回
+        </button>
         <SettingsIcon size={28} color="#666" />
         <h1 className="text-xl font-semibold">系统设置</h1>
       </div>

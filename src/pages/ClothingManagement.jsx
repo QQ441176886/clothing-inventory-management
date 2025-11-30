@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import Alert from '../components/Alert';
 import { db } from '../db/database';
 
@@ -11,7 +12,8 @@ const ClothingManagement = ({ refreshStats }) => {
   const [alertMessage, setAlertMessage] = useState('');
   const [alertType, setAlertType] = useState('success');
   const [isClient, setIsClient] = useState(false);
-  const [lowStockThreshold, setLowStockThreshold] = useState(10); // 默认值
+  const [lowStockThreshold, setLowStockThreshold] = useState(1); // 默认值
+  const navigate = useNavigate();
 
   // 从数据库加载服装数据
   const loadClothes = async () => {
@@ -76,11 +78,59 @@ const ClothingManagement = ({ refreshStats }) => {
       // 清空数据库中的服装数据
       await db.clothes.clear();
       
-      // 批量添加新的服装数据
-      await db.clothes.bulkAdd(newClothes);
+      // 移除导入数据中的id字段，并处理重复的code+color+size组合
+      const clothesWithoutIds = newClothes.map(clothing => {
+        const { id, ...clothingWithoutId } = clothing;
+        return clothingWithoutId;
+      });
       
-      setClothes(newClothes);
-      setFilteredClothes(newClothes);
+      // 使用Map去重，key为code+color+size的组合
+      const uniqueClothesMap = new Map();
+      clothesWithoutIds.forEach(clothing => {
+        const key = `${clothing.code}-${clothing.color}-${clothing.size}`;
+        // 如果有重复，保留最后一个
+        uniqueClothesMap.set(key, clothing);
+      });
+      
+      const uniqueClothes = Array.from(uniqueClothesMap.values());
+      
+      // 逐个添加，而不是批量添加，以更好地处理可能的冲突
+      const addedClothes = [];
+      const clothingIdMap = new Map(); // 用于存储服装对象到新ID的映射
+      
+      for (const clothing of uniqueClothes) {
+        try {
+          const newId = await db.clothes.add(clothing);
+          addedClothes.push(newId);
+          // 存储映射关系
+          clothingIdMap.set(clothing, newId);
+        } catch (error) {
+          console.warn('跳过重复或无效的服装记录:', clothing, error);
+        }
+      }
+      
+      // 为每款保存的服装创建库存记录
+      for (const clothing of uniqueClothes) {
+        // 获取新生成的服装ID
+        const clothingId = clothingIdMap.get(clothing);
+        if (!clothingId) continue; // 如果没有添加成功，跳过
+        
+        // 检查是否已经有库存记录
+        const existingInventory = await db.inventory.where({ clothingId }).first();
+        
+        if (!existingInventory) {
+          // 尝试从服装数据中获取库存数量（如果存在的话），否则使用默认值0
+          const inventoryQuantity = clothing.quantity || 0;
+          await db.inventory.add({
+            clothingId,
+            quantity: inventoryQuantity,
+            updatedAt: new Date()
+          });
+        }
+      }
+      
+      setClothes(uniqueClothes);
+      setFilteredClothes(uniqueClothes);
       if (refreshStats) refreshStats();
     } catch (error) {
       console.error('保存服装数据失败:', error);
@@ -153,13 +203,339 @@ const ClothingManagement = ({ refreshStats }) => {
     setCurrentClothing(null);
   };
 
+  // 模态框组件
+  const ClothingModal = ({ isOpen, onClose, clothing, onSave }) => {
+    const [formData, setFormData] = useState(clothing || {
+      name: '',
+      code: '',
+      category: '',
+      size: '',
+      color: '',
+      purchasePrice: '',
+      sellingPrice: '',
+      image: ''
+    });
+
+    // 当clothing属性变化时更新表单数据
+    useEffect(() => {
+      if (clothing) {
+        setFormData(clothing);
+      }
+    }, [clothing]);
+
+    const handleChange = (e) => {
+      const { name, value } = e.target;
+      setFormData(prev => ({
+        ...prev,
+        [name]: value
+      }));
+    };
+
+    const handleSubmit = (e) => {
+      e.preventDefault();
+      // 验证表单
+      if (!formData.name || !formData.code || !formData.category) {
+        alert('请填写必填字段');
+        return;
+      }
+      
+      // 转换价格为数字
+      const processedData = {
+        ...formData,
+        purchasePrice: parseFloat(formData.purchasePrice) || 0,
+        sellingPrice: parseFloat(formData.sellingPrice) || 0
+      };
+      
+      onSave(processedData);
+    };
+
+    if (!isOpen) return null;
+
+    return (
+      <div style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        backgroundColor: 'rgba(0, 0, 0, 0.5)',
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
+        zIndex: 1000
+      }}>
+        <div style={{
+          backgroundColor: 'white',
+          borderRadius: '8px',
+          padding: '24px',
+          maxWidth: '500px',
+          width: '100%',
+          maxHeight: '90vh',
+          overflowY: 'auto'
+        }}>
+          <div style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginBottom: '20px'
+          }}>
+            <h2 style={{ margin: 0, color: '#333' }}>
+              {clothing ? '编辑商品' : '添加新商品'}
+            </h2>
+            <button
+              onClick={onClose}
+              style={{
+                background: 'none',
+                border: 'none',
+                fontSize: '24px',
+                cursor: 'pointer',
+                color: '#666'
+              }}
+            >
+              ×
+            </button>
+          </div>
+
+          <form onSubmit={handleSubmit}>
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{
+                display: 'block',
+                marginBottom: '4px',
+                fontWeight: '500',
+                color: '#333'
+              }}>商品图片 URL</label>
+              <input
+                type="text"
+                name="image"
+                value={formData.image}
+                onChange={handleChange}
+                placeholder="输入商品图片URL"
+                style={{
+                  width: '100%',
+                  padding: '8px 12px',
+                  border: '1px solid #ddd',
+                  borderRadius: '4px',
+                  fontSize: '14px'
+                }}
+              />
+            </div>
+
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{
+                display: 'block',
+                marginBottom: '4px',
+                fontWeight: '500',
+                color: '#333'
+              }}>商品编码 *</label>
+              <input
+                type="text"
+                name="code"
+                value={formData.code}
+                onChange={handleChange}
+                placeholder="输入商品编码"
+                style={{
+                  width: '100%',
+                  padding: '8px 12px',
+                  border: '1px solid #ddd',
+                  borderRadius: '4px',
+                  fontSize: '14px'
+                }}
+                required
+              />
+            </div>
+
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{
+                display: 'block',
+                marginBottom: '4px',
+                fontWeight: '500',
+                color: '#333'
+              }}>商品名称 *</label>
+              <input
+                type="text"
+                name="name"
+                value={formData.name}
+                onChange={handleChange}
+                placeholder="输入商品名称"
+                style={{
+                  width: '100%',
+                  padding: '8px 12px',
+                  border: '1px solid #ddd',
+                  borderRadius: '4px',
+                  fontSize: '14px'
+                }}
+                required
+              />
+            </div>
+
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{
+                display: 'block',
+                marginBottom: '4px',
+                fontWeight: '500',
+                color: '#333'
+              }}>分类 *</label>
+              <input
+                type="text"
+                name="category"
+                value={formData.category}
+                onChange={handleChange}
+                placeholder="输入商品分类"
+                style={{
+                  width: '100%',
+                  padding: '8px 12px',
+                  border: '1px solid #ddd',
+                  borderRadius: '4px',
+                  fontSize: '14px'
+                }}
+                required
+              />
+            </div>
+
+            <div style={{ display: 'flex', gap: '16px', marginBottom: '16px' }}>
+              <div style={{ flex: 1 }}>
+                <label style={{
+                  display: 'block',
+                  marginBottom: '4px',
+                  fontWeight: '500',
+                  color: '#333'
+                }}>尺寸</label>
+                <input
+                  type="text"
+                  name="size"
+                  value={formData.size}
+                  onChange={handleChange}
+                  placeholder="输入尺寸"
+                  style={{
+                    width: '100%',
+                    padding: '8px 12px',
+                    border: '1px solid #ddd',
+                    borderRadius: '4px',
+                    fontSize: '14px'
+                  }}
+                />
+              </div>
+
+              <div style={{ flex: 1 }}>
+                <label style={{
+                  display: 'block',
+                  marginBottom: '4px',
+                  fontWeight: '500',
+                  color: '#333'
+                }}>颜色</label>
+                <input
+                  type="text"
+                  name="color"
+                  value={formData.color}
+                  onChange={handleChange}
+                  placeholder="输入颜色"
+                  style={{
+                    width: '100%',
+                    padding: '8px 12px',
+                    border: '1px solid #ddd',
+                    borderRadius: '4px',
+                    fontSize: '14px'
+                  }}
+                />
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: '16px', marginBottom: '20px' }}>
+              <div style={{ flex: 1 }}>
+                <label style={{
+                  display: 'block',
+                  marginBottom: '4px',
+                  fontWeight: '500',
+                  color: '#333'
+                }}>采购价</label>
+                <input
+                  type="number"
+                  name="purchasePrice"
+                  value={formData.purchasePrice}
+                  onChange={handleChange}
+                  placeholder="输入采购价"
+                  step="0.01"
+                  min="0"
+                  style={{
+                    width: '100%',
+                    padding: '8px 12px',
+                    border: '1px solid #ddd',
+                    borderRadius: '4px',
+                    fontSize: '14px'
+                  }}
+                />
+              </div>
+
+              <div style={{ flex: 1 }}>
+                <label style={{
+                  display: 'block',
+                  marginBottom: '4px',
+                  fontWeight: '500',
+                  color: '#333'
+                }}>销售价</label>
+                <input
+                  type="number"
+                  name="sellingPrice"
+                  value={formData.sellingPrice}
+                  onChange={handleChange}
+                  placeholder="输入销售价"
+                  step="0.01"
+                  min="0"
+                  style={{
+                    width: '100%',
+                    padding: '8px 12px',
+                    border: '1px solid #ddd',
+                    borderRadius: '4px',
+                    fontSize: '14px'
+                  }}
+                />
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+              <button
+                type="button"
+                onClick={onClose}
+                style={{
+                  padding: '8px 16px',
+                  backgroundColor: '#f0f0f0',
+                  border: '1px solid #ddd',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  color: '#333'
+                }}
+              >
+                取消
+              </button>
+              <button
+                type="submit"
+                style={{
+                  padding: '8px 16px',
+                  backgroundColor: '#2196F3',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  color: 'white'
+                }}
+              >
+                {clothing ? '保存修改' : '添加商品'}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  };
+
   if (!isClient) {
     return <div>加载中...</div>;
   }
 
   return (
     <div style={{ padding: '20px', maxWidth: '1200px', margin: '0 auto' }}>
-      {/* 标题 */}
+      {/* 标题和返回按钮 */}
       <div style={{ 
         display: 'flex', 
         justifyContent: 'space-between', 
@@ -168,7 +544,41 @@ const ClothingManagement = ({ refreshStats }) => {
         flexWrap: 'wrap',
         gap: '10px'
       }}>
-        <h1 style={{ margin: 0, color: '#333' }}>服装管理</h1>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <button
+            type="button"
+            onClick={() => navigate('/dashboard')}
+            style={{
+              padding: '8px 16px',
+              background: '#f8f9fa',
+              color: '#6c757d',
+              border: '1px solid #dee2e6',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontSize: '14px',
+              fontWeight: '500'
+            }}
+          >
+            ← 返回
+          </button>
+          <h1 style={{ margin: 0, color: '#333' }}>服装管理</h1>
+        </div>
+        <button
+          type="button"
+          onClick={handleAdd}
+          style={{
+            padding: '8px 16px',
+            background: '#4CAF50',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            fontSize: '14px',
+            fontWeight: '500'
+          }}
+        >
+          + 添加商品
+        </button>
       </div>
 
       {/* 搜索框 */}
@@ -467,7 +877,7 @@ const ClothingManagement = ({ refreshStats }) => {
       </div>
       
       {/* 响应式样式 */}
-      <style jsx>{`
+      <style>{`
         @media (max-width: 768px) {
           .table-header,
           .table-row {
@@ -486,6 +896,14 @@ const ClothingManagement = ({ refreshStats }) => {
 
       {/* 提示信息 */}
       <Alert message={alertMessage} type={alertType} onClose={() => setAlertMessage('')} />
+      
+      {/* 商品管理模态框 */}
+      <ClothingModal
+        isOpen={isModalOpen}
+        onClose={closeModal}
+        clothing={currentClothing}
+        onSave={handleSave}
+      />
     </div>
   );
 };

@@ -327,7 +327,7 @@ function App() {
               />
               <Route 
                 path="/settings" 
-                element={<Settings refreshData={refreshStats} />} 
+                element={<Settings />} 
               />
               <Route 
                 path="/data-viewer" 

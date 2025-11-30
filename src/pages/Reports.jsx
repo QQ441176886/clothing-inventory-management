@@ -1,67 +1,25 @@
 import React, { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { BarChart3, TrendingUp, DollarSign, Package, Calendar } from 'lucide-react'
 import { db } from '../db/database'
 
 const Reports = ({ refreshTrigger }) => {
+  const navigate = useNavigate()
   const [reports, setReports] = useState({
     sales: [],
     purchases: [],
     inventory: []
   })
-  // 使用本地日期格式化，避免时区偏差
-  const getLocalDateString = (date) => {
-    const year = date.getFullYear()
-    const month = String(date.getMonth() + 1).padStart(2, '0')
-    const day = String(date.getDate()).padStart(2, '0')
-    return `${year}-${month}-${day}`
-  }
-  
-  const [dateRange, setDateRange] = useState({
-    start: getLocalDateString(new Date(new Date().getFullYear(), new Date().getMonth(), 1)),
-    end: getLocalDateString(new Date())
-  })
 
   useEffect(() => {
     loadReports()
-  }, [dateRange, refreshTrigger])
+  }, [refreshTrigger])
 
   const loadReports = async () => {
     try {
-      // 确保日期范围查询包含边界日期的所有记录
-      const startDate = dateRange.start;
-      const endDate = dateRange.end;
-      
       // 获取所有记录
-      const allStockOutRecords = await db.stockOut.toArray();
-      const allStockInRecords = await db.stockIn.toArray();
-      
-      // 使用更宽松的日期比较，确保包含边界日期的所有记录
-      const stockOutRecords = allStockOutRecords.filter(record => {
-        // 处理可能的日期格式不一致问题
-        let recordDate = record.date;
-        if (typeof recordDate === 'string') {
-          // 处理日期时间格式
-          if (recordDate.includes(' ')) {
-            recordDate = recordDate.split(' ')[0];
-          } else if (recordDate.includes('T')) {
-            recordDate = recordDate.split('T')[0];
-          }
-        }
-        return recordDate >= startDate && recordDate <= endDate;
-      });
-      
-      const stockInRecords = allStockInRecords.filter(record => {
-        let recordDate = record.date;
-        if (typeof recordDate === 'string') {
-          // 处理日期时间格式
-          if (recordDate.includes(' ')) {
-            recordDate = recordDate.split(' ')[0];
-          } else if (recordDate.includes('T')) {
-            recordDate = recordDate.split('T')[0];
-          }
-        }
-        return recordDate >= startDate && recordDate <= endDate;
-      });
+      const stockOutRecords = await db.stockOut.toArray();
+      const stockInRecords = await db.stockIn.toArray();
 
       const clothes = await db.clothes.toArray();
 
@@ -155,24 +113,41 @@ const Reports = ({ refreshTrigger }) => {
       let totalPurchases = 0
       
       stockInRecords.forEach(record => {
-        // 放宽验证条件：只要有入库记录就进行统计
-        if (record.quantity >= 0) { // 允许数量为0的记录
-          let recordDate = record.date;
-          if (typeof recordDate === 'string') {
-            if (recordDate.includes(' ')) {
-              recordDate = recordDate.split(' ')[0];
-            } else if (recordDate.includes('T')) {
-              recordDate = recordDate.split('T')[0];
-            }
-          }
-          
-          if (!purchasesByDate[recordDate]) {
-            purchasesByDate[recordDate] = { amount: 0, count: 0 }
-          }
-          purchasesByDate[recordDate].amount += record.totalAmount
-          purchasesByDate[recordDate].count += record.quantity
-          totalPurchases += record.totalAmount
+        // 对于所有入库记录都进行统计，无论是否有totalAmount字段
+        // 确保数量和价格的有效性
+        const recordQuantity = record.quantity || 0;
+        const recordPurchasePrice = record.purchasePrice || 0;
+        
+        // 总是计算实际金额：优先使用记录中的totalAmount，否则自动计算
+        let actualTotalAmount = record.totalAmount || 0;
+        
+        // 如果记录中没有totalAmount或者totalAmount为0，但有有效的数量和价格，则自动计算
+        if (actualTotalAmount === 0 && recordQuantity > 0 && recordPurchasePrice > 0) {
+          actualTotalAmount = recordQuantity * recordPurchasePrice;
         }
+        
+        // 处理日期格式
+        let recordDate = record.date;
+        if (typeof recordDate === 'string') {
+          if (recordDate.includes(' ')) {
+            recordDate = recordDate.split(' ')[0];
+          } else if (recordDate.includes('T')) {
+            recordDate = recordDate.split('T')[0];
+          }
+        } else if (recordDate instanceof Date) {
+          // 如果是Date对象，转换为YYYY-MM-DD格式
+          recordDate = recordDate.toISOString().split('T')[0];
+        } else {
+          // 默认使用当前日期
+          recordDate = new Date().toISOString().split('T')[0];
+        }
+        
+        if (!purchasesByDate[recordDate]) {
+          purchasesByDate[recordDate] = { amount: 0, count: 0 }
+        }
+        purchasesByDate[recordDate].amount += actualTotalAmount
+        purchasesByDate[recordDate].count += recordQuantity
+        totalPurchases += actualTotalAmount
       })
 
       setReports({
@@ -237,34 +212,30 @@ const Reports = ({ refreshTrigger }) => {
         flexWrap: 'wrap',
         gap: '16px'
       }}>
-        <h1 className="text-xl font-semibold" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <BarChart3 size={24} />
-          统计报表
-        </h1>
-        
-        <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-          <div className="form-group" style={{ margin: 0 }}>
-            <label className="form-label">开始日期</label>
-            <input
-              type="date"
-              value={dateRange.start}
-              onChange={(e) => setDateRange({...dateRange, start: e.target.value})}
-              className="form-input"
-              style={{ minHeight: '44px' }}
-            />
-          </div>
-          
-          <div className="form-group" style={{ margin: 0 }}>
-            <label className="form-label">结束日期</label>
-            <input
-              type="date"
-              value={dateRange.end}
-              onChange={(e) => setDateRange({...dateRange, end: e.target.value})}
-              className="form-input"
-              style={{ minHeight: '44px' }}
-            />
-          </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <button
+            type="button"
+            onClick={() => navigate('/dashboard')}
+            style={{
+              padding: '8px 16px',
+              background: '#f8f9fa',
+              color: '#6c757d',
+              border: '1px solid #dee2e6',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontSize: '14px',
+              fontWeight: '500'
+            }}
+          >
+            ← 返回
+          </button>
+          <h1 className="text-xl font-semibold" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <BarChart3 size={24} />
+            统计报表
+          </h1>
         </div>
+        
+
       </div>
 
       {/* 关键指标 */}

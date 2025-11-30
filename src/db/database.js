@@ -17,6 +17,14 @@ export class ClothingInventoryDB extends Dexie {
   // 初始化数据库（创建一些默认数据如果数据库为空）
   async initialize() {
     try {
+      // 确保settings表存在
+      await this.settings.count();
+      
+      // 检查并设置默认低库存阈值
+      // 使用put而不是add，这样即使键已存在也不会抛出错误
+      await this.settings.put({ key: 'lowStockThreshold', value: 1 });
+      console.log('已设置默认低库存阈值: 1');
+      
       // 检查是否需要创建初始数据
       const clothesCount = await this.clothes.count();
       
@@ -63,6 +71,10 @@ export class ClothingInventoryDB extends Dexie {
       }
     } catch (error) {
       console.error('数据库初始化失败:', error);
+      // 检查是否是版本冲突或数据库损坏
+      if (error.name === 'VersionError' || error.name === 'InvalidStateError') {
+        console.error('数据库版本冲突或损坏，建议重建数据库');
+      }
       throw error;
     }
   }

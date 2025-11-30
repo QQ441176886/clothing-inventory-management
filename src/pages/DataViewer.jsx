@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Database, Package, ShoppingCart, TrendingUp, RefreshCw, Download, Trash2, ChevronDown, ChevronUp, Eye, FileText } from 'lucide-react'
 import { db } from '../db/database'
 import Alert from '../components/Alert'
 
 const DataViewer = () => {
+  const navigate = useNavigate()
   const [selectedDataType, setSelectedDataType] = useState(null)
   const [records, setRecords] = useState([])
   const [loading, setLoading] = useState(false)
@@ -11,6 +13,11 @@ const DataViewer = () => {
   const [selectedRecords, setSelectedRecords] = useState(new Set())
   const [alertMessage, setAlertMessage] = useState('')
   const [alertType, setAlertType] = useState('')
+  // 日期范围查询状态
+  const [dateRange, setDateRange] = useState({
+    startDate: '',
+    endDate: ''
+  })
 
   // 数据卡片配置
   const dataCards = [
@@ -80,10 +87,38 @@ const DataViewer = () => {
           tableData = []
       }
 
-      setRecords(tableData)
+      // 日期范围筛选
+      let filteredData = [...tableData]
+      if (dateRange.startDate || dateRange.endDate) {
+        filteredData = filteredData.filter(record => {
+          // 优先使用用户输入的date字段，而不是系统生成的createdAt字段
+          const recordDate = new Date(record.date || record.createdAt)
+          
+          // 只比较日期部分，不考虑时间和时区
+          const getDateOnly = (dateString) => {
+            if (!dateString) return null
+            // 处理不同日期格式：YYYY-MM-DD HH:mm:ss 或 ISO格式
+            const date = new Date(dateString)
+            // 返回日期的字符串表示，避免时区问题
+            return date.toISOString().split('T')[0]
+          }
+          
+          const recordDateOnly = getDateOnly(record.date || record.createdAt)
+          const startDateOnly = getDateOnly(dateRange.startDate)
+          const endDateOnly = getDateOnly(dateRange.endDate)
+          
+          const isAfterStart = !startDateOnly || recordDateOnly >= startDateOnly
+          const isBeforeEnd = !endDateOnly || recordDateOnly <= endDateOnly
+          
+          return isAfterStart && isBeforeEnd
+        })
+      }
       
-      if (tableData.length === 0) {
-        setAlertMessage(`暂无${dataCards.find(card => card.id === dataType)?.title || '数据'}`)
+      setRecords(filteredData)
+      
+      if (filteredData.length === 0) {
+        const dateFilterMsg = dateRange.startDate || dateRange.endDate ? '在此日期范围内' : ''
+        setAlertMessage(`暂无${dataCards.find(card => card.id === dataType)?.title || '数据'}${dateFilterMsg}`)
         setAlertType('info')
       }
       
@@ -185,6 +220,8 @@ const DataViewer = () => {
     linkElement.setAttribute('download', exportFileDefaultName)
     linkElement.click()
   }
+
+
 
   // 格式化字段显示
   const formatField = (value, fieldName) => {
@@ -322,16 +359,40 @@ const DataViewer = () => {
       margin: '0 auto',
       minHeight: 'calc(100vh - 80px)'
     }}>
-      <h1 style={{
-        fontSize: 'clamp(24px, 5vw, 32px)',
-        fontWeight: '600',
-        color: '#1f2937',
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
         marginBottom: '24px',
-        textAlign: 'center',
-        padding: '0 16px'
+        position: 'relative'
       }}>
-        数据查看器
-      </h1>
+        <button
+          type="button"
+          onClick={() => navigate('/dashboard')}
+          style={{
+            position: 'absolute',
+            left: '0',
+            padding: '8px 16px',
+            background: '#f8f9fa',
+            color: '#6c757d',
+            border: '1px solid #dee2e6',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            fontSize: '14px',
+            fontWeight: '500'
+          }}
+        >
+          ← 返回
+        </button>
+        <h1 style={{
+          fontSize: 'clamp(24px, 5vw, 32px)',
+          fontWeight: '600',
+          color: '#1f2937',
+          padding: '0 16px'
+        }}>
+          数据查看器
+        </h1>
+      </div>
       
       <div style={{
         display: 'grid',
@@ -497,7 +558,94 @@ const DataViewer = () => {
               </span>
             </div>
           </div>
-           
+          
+          {/* 日期范围筛选 */}
+          {(selectedDataType === 'stockIn' || selectedDataType === 'stockOut') && (
+            <div style={{
+              display: 'flex',
+              gap: '12px',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              padding: '12px',
+              background: '#f8fafc',
+              borderRadius: '8px',
+              marginBottom: '16px'
+            }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <label style={{ fontSize: '14px', color: '#6b7280', fontWeight: '500' }}>开始日期</label>
+                <input
+                  type="date"
+                  value={dateRange.startDate}
+                  onChange={(e) => setDateRange(prev => ({ ...prev, startDate: e.target.value }))}
+                  style={{
+                    padding: '8px 12px',
+                    border: '1px solid #e5e7eb',
+                    borderRadius: '4px',
+                    fontSize: '14px',
+                    minWidth: '140px'
+                  }}
+                />
+              </div>
+              
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <label style={{ fontSize: '14px', color: '#6b7280', fontWeight: '500' }}>结束日期</label>
+                <input
+                  type="date"
+                  value={dateRange.endDate}
+                  onChange={(e) => setDateRange(prev => ({ ...prev, endDate: e.target.value }))}
+                  style={{
+                    padding: '8px 12px',
+                    border: '1px solid #e5e7eb',
+                    borderRadius: '4px',
+                    fontSize: '14px',
+                    minWidth: '140px'
+                  }}
+                />
+              </div>
+              
+              <button
+                onClick={() => {
+                  // 重置日期范围
+                  setDateRange({ startDate: '', endDate: '' })
+                  // 重新加载数据
+                  loadData(selectedDataType)
+                }}
+                style={{
+                  padding: '8px 16px',
+                  background: '#f1f5f9',
+                  color: '#64748b',
+                  border: '1px solid #e2e8f0',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  fontWeight: '500',
+                  alignSelf: 'flex-end'
+                }}
+              >
+                重置
+              </button>
+              
+              <button
+                onClick={() => loadData(selectedDataType)}
+                disabled={loading}
+                style={{
+                  padding: '8px 16px',
+                  background: '#3b82f6',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: loading ? 'not-allowed' : 'pointer',
+                  fontSize: '14px',
+                  fontWeight: '500',
+                  alignSelf: 'flex-end',
+                  opacity: loading ? 0.6 : 1
+                }}
+              >
+                筛选
+              </button>
+            </div>
+          )}
+          
           <div style={{
             display: 'flex',
             gap: '6px',
@@ -547,6 +695,8 @@ const DataViewer = () => {
               <Download size={16} />
               导出
             </button>
+            
+
             
             {selectedRecords.size > 0 && (
               <button
