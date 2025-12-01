@@ -27,7 +27,7 @@ const Header = () => {
           flexShrink: 0
         }}>
           <img 
-            src="蝴蝶结.svg" 
+            src={process.env.NODE_ENV === 'production' ? '/clothing-inventory-management/蝴蝶结.svg' : '/蝴蝶结.svg'} 
             alt="Logo" 
             style={{ width: '28px', height: '28px', objectFit: 'contain' }} 
           />
