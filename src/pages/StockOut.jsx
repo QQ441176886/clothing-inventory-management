@@ -213,7 +213,7 @@ const SaleItemForm = ({ item, index, onUpdate, onRemove, clothes, inventory, sea
               border: '1px solid #e0e0e0'
             }}>
               <div style={{ fontSize: '14px', fontWeight: '600' }}>
-                {selectedClothing.code} - {selectedClothing.name}
+                ID: {selectedClothing.id} | {selectedClothing.code} - {selectedClothing.name}
               </div>
               <div style={{ fontSize: '12px', color: '#666' }}>
                 尺码: {selectedClothing.size} | 颜色: {selectedClothing.color} | 库存: {availableQuantity}
@@ -511,11 +511,28 @@ const StockOut = ({ refreshStats }) => {
           if (selectedClothing) {
             updatedItem.sellingPrice = Math.round(selectedClothing.sellingPrice * 100) / 100
             updatedItem.availableQuantity = inventoryItem ? inventoryItem.quantity : 0
+            // 如果当前数量大于新的可用库存，重置数量为可用库存
+            if (updatedItem.quantity > updatedItem.availableQuantity) {
+              updatedItem.quantity = updatedItem.availableQuantity || 1
+            }
           }
         }
         
         if (field === 'sellingPrice') {
           updatedItem.sellingPrice = Math.round(parseFloat(value) * 100) / 100
+        }
+        
+        if (field === 'quantity') {
+          let quantity = parseInt(value)
+          // 确保数量至少为1
+          if (isNaN(quantity) || quantity < 1) {
+            quantity = 1
+          }
+          // 确保数量不超过可用库存
+          if (quantity > updatedItem.availableQuantity) {
+            quantity = updatedItem.availableQuantity
+          }
+          updatedItem.quantity = quantity
         }
         
         return updatedItem
@@ -604,6 +621,10 @@ const StockOut = ({ refreshStats }) => {
       const totalAmount = calculateTotalAmount()
       setAlertMessage(`销售操作成功完成！销售总额：¥${totalAmount.toFixed(2)}`)
       setAlertType('success')
+      
+      // 重新加载库存数据，确保本地状态与数据库一致
+      const newInventory = await db.inventory.toArray()
+      setInventory(newInventory)
       
       // 重置表单
       setSaleItems([{

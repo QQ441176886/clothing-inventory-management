@@ -22,6 +22,7 @@ const Reports = ({ refreshTrigger }) => {
       const stockInRecords = await db.stockIn.toArray();
 
       const clothes = await db.clothes.toArray();
+      const inventory = await db.inventory.toArray();
 
       // 销售统计
       const salesByDate = {};
@@ -173,9 +174,9 @@ const Reports = ({ refreshTrigger }) => {
           totalQuantity: stockInRecords.reduce((sum, record) => sum + record.quantity, 0)
         },
         inventory: {
-          totalProducts: clothes.length,
-          totalValue: await calculateTotalInventoryValue(clothes)
-        }
+            totalProducts: clothes.filter(clothing => clothing.category).length,
+            totalValue: await calculateTotalInventoryValue(clothes)
+          }
       })
     } catch (error) {
       console.error('加载报表数据失败:', error)
@@ -187,10 +188,18 @@ const Reports = ({ refreshTrigger }) => {
       const inventory = await db.inventory.toArray()
       const total = inventory.reduce((sum, inv) => {
         const clothing = clothes.find(c => c.id === inv.clothingId)
-        return sum + (clothing ? inv.quantity * clothing.purchasePrice : 0)
+        // 确保只计算有实际库存（数量>0）且有对应服装信息的商品
+        if (clothing && inv.quantity > 0 && clothing.purchasePrice > 0) {
+          // 先计算单个商品的库存价值，再累加，确保精度
+          const itemValue = inv.quantity * clothing.purchasePrice
+          return sum + itemValue
+        }
+        return sum
       }, 0)
-      return Math.round(total * 100) / 100 // 确保总价值精度
+      // 最后统一处理精度问题，避免多次四舍五入导致的累积误差
+      return Math.round(total * 100) / 100
     } catch (error) {
+      console.error('计算库存总价值失败:', error)
       return 0
     }
   }

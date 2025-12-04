@@ -1,12 +1,14 @@
 import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Settings as SettingsIcon, Download, Upload, Database, AlertTriangle, AlertCircle, Save } from 'lucide-react'
+import { Settings as SettingsIcon, Download, Upload, Database, AlertTriangle, AlertCircle, Save, FileSpreadsheet } from 'lucide-react'
 import { db } from '../db/database'
+import * as XLSX from 'xlsx'
 
 const Settings = () => {
   const navigate = useNavigate()
   const [exportStatus, setExportStatus] = useState('')
   const [importStatus, setImportStatus] = useState('')
+  const [excelImportStatus, setExcelImportStatus] = useState('')
   const [lowStockThreshold, setLowStockThreshold] = useState('')
   const [saveStatus, setSaveStatus] = useState('')
   
@@ -113,7 +115,361 @@ const Settings = () => {
     }
   }
 
-  // 导入数据
+  // Excel转换和导入数据
+  const importExcelData = (event) => {
+    const file = event.target.files[0]
+    if (!file) return
+    
+    // 检查文件类型
+    if (!file.name.endsWith('.xlsx')) {
+      setExcelImportStatus('导入失败：请选择Excel格式的进货单文件')
+      setTimeout(() => setExcelImportStatus(''), 5000)
+      event.target.value = '' // 清空文件输入
+      return
+    }
+    
+    setExcelImportStatus('正在解析Excel文件...')
+    
+    const reader = new FileReader()
+    reader.onload = async (e) => {
+      try {
+        const data = new Uint8Array(e.target.result)
+        const workbook = XLSX.read(data, { type: 'array' })
+        const worksheet = workbook.Sheets[workbook.SheetNames[0]]
+        
+        // 以数组形式读取Excel，这样可以避免中文列名编码问题
+        const excelDataArray = XLSX.utils.sheet_to_json(worksheet, { header: 1 })
+        
+        if (excelDataArray.length < 2) {
+          setExcelImportStatus('导入失败：Excel文件中没有数据')
+          setTimeout(() => setExcelImportStatus(''), 5000)
+          return
+        }
+        
+        console.log('Excel数据解析成功:', excelDataArray)
+        
+        // 手动处理表头和数据行
+        const headers = excelDataArray[0]
+        const dataRows = excelDataArray.slice(1)
+        
+        // 查找列索引（基于列名内容）
+        const findColumnIndex = (headerNameKeywords) => {
+          return headers.findIndex(h => {
+            const headerStr = String(h || '')
+            return headerNameKeywords.some(keyword => 
+              headerStr.includes(keyword) || 
+              headerStr.toLowerCase().includes(keyword.toLowerCase())
+            )
+          })
+        }
+        
+        // 定义列名关键词
+        const codeIndex = findColumnIndex(['编码', 'code', 'Code'])
+        const nameIndex = findColumnIndex(['名称', 'name', 'Name'])
+        const categoryIndex = findColumnIndex(['品类', '类别', 'category', 'Category'])
+        const colorIndex = findColumnIndex(['颜色', 'color', 'Color'])
+        const sizeIndex = findColumnIndex(['尺码', '尺寸', 'size', 'Size'])
+        const quantityIndex = findColumnIndex(['数量', 'quantity', 'Quantity'])
+        const purchasePriceIndex = findColumnIndex(['进货单价', '进价', '进货', 'purchasePrice', 'PurchasePrice'])
+        const sellingPriceIndex = findColumnIndex(['销售金额', '售价', '销售', 'sellingPrice', 'SellingPrice'])
+        
+        console.log('列索引:', {
+          code: codeIndex,
+          name: nameIndex,
+          category: categoryIndex,
+          color: colorIndex,
+          size: sizeIndex,
+          quantity: quantityIndex,
+          purchasePrice: purchasePriceIndex,
+          sellingPrice: sellingPriceIndex
+        })
+        
+        // 检查必要的列是否都找到了
+        const missingColumns = []
+        if (codeIndex === -1) missingColumns.push('服装编码/Code')
+        if (nameIndex === -1) missingColumns.push('服装名称/Name')
+        if (colorIndex === -1) missingColumns.push('服装颜色/Color')
+        if (sizeIndex === -1) missingColumns.push('服装尺码/Size')
+        
+        if (missingColumns.length > 0) {
+          console.warn('缺少必要的列:', missingColumns)
+          setExcelImportStatus('导入失败：缺少必要的列 ' + missingColumns.join(', '))
+          setTimeout(() => setExcelImportStatus(''), 5000)
+          return
+        }
+        
+        // 清理和转换数据
+        const cleanedData = dataRows.map(row => ({
+          '服装编码': String(row[codeIndex] || '').trim(),
+          '服装名称': String(row[nameIndex] || '').trim(),
+          '服装品类': String(row[categoryIndex] || '其他').trim(),
+          '服装颜色': String(row[colorIndex] || '').trim(),
+          '服装尺码': String(row[sizeIndex] || '').trim(),
+          '服装数量': Math.round(Number(row[quantityIndex] || 1)),
+          '进货单价': Number(row[purchasePriceIndex] || 0),
+          '销售金额': Number(row[sellingPriceIndex] || (Number(row[purchasePriceIndex] || 0) * 1.5)),
+          '备注': ''
+        })).filter(row => 
+          row['服装编码'] && row['服装名称'] && row['服装颜色'] && row['服装尺码']
+        )
+        
+        console.log('清理后的数据行数:', cleanedData.length)
+        
+        // 构建系统所需的JSON结构
+        const clothes = []
+        const inventory = []
+        const stockIn = []
+        let clothingIdCounter = 1
+        
+        // 创建一个字典来跟踪已存在的服装记录（使用code+color+size作为唯一标识）
+        const existingClothes = new Map()
+        
+        const currentTimeISO = new Date().toISOString()
+        
+        for (let index = 0; index < cleanedData.length; index++) {
+          const row = cleanedData[index]
+          // 生成唯一标识：服装编码+颜色+尺码
+          const uniqueKey = `${row['服装编码']}_${row['服装颜色']}_${row['服装尺码']}`
+          let clothingId
+          
+          if (existingClothes.has(uniqueKey)) {
+            // 如果服装记录已存在，使用已有的clothingId
+            clothingId = existingClothes.get(uniqueKey)
+            
+            // 找到对应的库存记录并更新数量
+            for (const invItem of inventory) {
+              if (invItem['clothingId'] === clothingId) {
+                invItem['quantity'] += row['服装数量']
+                break
+              }
+            }
+          } else {
+            // 如果服装记录不存在，创建新的服装记录
+            const clothing = {
+              "id": clothingIdCounter,
+              "code": row['服装编码'],
+              "name": row['服装名称'],
+              "category": row['服装品类'],
+              "categoryCustom": "",
+              "purchasePrice": row['进货单价'],
+              "sellingPrice": row['销售金额'],
+              "remark": row['备注'],
+              "color": row['服装颜色'],
+              "size": row['服装尺码'],
+              "createdAt": currentTimeISO,
+              "updatedAt": currentTimeISO
+            }
+            clothes.push(clothing)
+            
+            // 创建库存记录
+            const inventoryItem = {
+              "clothingId": clothingIdCounter,
+              "quantity": row['服装数量'],
+              "createdAt": currentTimeISO,
+              "updatedAt": currentTimeISO
+            }
+            inventory.push(inventoryItem)
+            
+            // 记录这个服装记录
+            existingClothes.set(uniqueKey, clothingIdCounter)
+            clothingId = clothingIdCounter
+            clothingIdCounter++
+          }
+          
+          // 创建入库记录（无论服装记录是否已存在，都创建新的入库记录）
+          const stockInItem = {
+            "clothingId": clothingId,
+            "quantity": row['服装数量'],
+            "purchasePrice": row['进货单价'],
+            "totalAmount": row['服装数量'] * row['进货单价'],
+            "date": new Date().toISOString().split('T')[0] + ' ' + new Date().toTimeString().split(' ')[0],
+            "operator": "系统导入",
+            "notes": "Excel导入",
+            "size": row['服装尺码'],
+            "color": row['服装颜色'],
+            "code": row['服装编码'],
+            "name": row['服装名称'],
+            "category": row['服装品类'],
+            "sellingPrice": row['销售金额'],
+            "createdAt": currentTimeISO
+          }
+          stockIn.push(stockInItem)
+        }
+        
+        const duplicateCount = cleanedData.length - clothes.length
+        
+        console.log('转换结果统计:')
+        console.log('  原始数据行数:', cleanedData.length)
+        console.log('  重复商品数量:', duplicateCount)
+        console.log('  服装记录数:', clothes.length)
+        console.log('  库存记录数:', inventory.length)
+        console.log('  入库记录数:', stockIn.length)
+        
+        setExcelImportStatus('Excel解析完成，正在导入数据...')
+        
+        // 准备导入数据
+        const dataToImport = {
+          clothes,
+          inventory,
+          stockIn
+        }
+        
+        // 使用现有的导入逻辑导入转换后的数据
+        const importResult = await importDataFromObject(dataToImport)
+        
+        if (importResult.success) {
+          setExcelImportStatus(`Excel数据导入成功！共导入 ${importResult.importedCount} 条记录，页面将刷新...`)
+          setTimeout(() => {
+            window.location.reload()
+          }, 2000)
+        } else {
+          setExcelImportStatus('导入失败：' + importResult.error)
+          setTimeout(() => setExcelImportStatus(''), 5000)
+        }
+        
+      } catch (error) {
+        console.error('Excel转换或导入失败:', error)
+        setExcelImportStatus('导入失败：' + error.message)
+        setTimeout(() => setExcelImportStatus(''), 5000)
+      }
+    }
+    
+    reader.onerror = () => {
+      setExcelImportStatus('导入失败：文件读取错误')
+      setTimeout(() => setExcelImportStatus(''), 5000)
+    }
+    
+    reader.readAsArrayBuffer(file)
+    event.target.value = '' // 清空文件输入
+  }
+  
+  // 从对象导入数据（用于复用导入逻辑）
+  const importDataFromObject = async (dataToImport) => {
+    try {
+      let importedCount = 0
+      
+      // 清空现有数据
+      await db.clothes.clear()
+      await db.inventory.clear()
+      await db.stockIn.clear()
+      await db.stockOut.clear()
+      
+      // 移除导入数据中的id字段，保留所有服装记录
+      const uniqueClothes = dataToImport.clothes
+        .filter(clothing => clothing) // 只过滤null/undefined
+        .map(clothing => {
+          const { id, ...clothingWithoutId } = clothing
+          return clothingWithoutId
+        })
+      
+      // 逐个添加服装记录
+      const clothesIdMap = new Map() // 使用唯一键映射新ID
+      const clothesByUniqueKey = new Map() // 用于快速查找
+      
+      for (let i = 0; i < uniqueClothes.length; i++) {
+        try {
+          const clothing = uniqueClothes[i]
+          
+          // 添加服装记录
+          const newId = await db.clothes.add(clothing)
+          importedCount++
+          
+          // 使用唯一键（服装编码+颜色+尺码）建立映射
+          const uniqueKey = `${clothing.code}_${clothing.color}_${clothing.size}`
+          clothesIdMap.set(uniqueKey, newId)
+          clothesByUniqueKey.set(uniqueKey, clothing)
+        } catch (error) {
+          console.warn('跳过重复或无效的服装记录:', error)
+        }
+      }
+      
+      // 处理inventory数据
+      if (dataToImport.inventory && Array.isArray(dataToImport.inventory)) {
+        for (const inventoryItem of dataToImport.inventory) {
+          try {
+            const { id, clothingId, quantity, ...inventoryWithoutId } = inventoryItem
+            
+            // 获取原始服装数据
+            const originalClothing = dataToImport.clothes[clothingId - 1] || 
+                                    dataToImport.clothes.find(c => 
+                                      c.id === clothingId
+                                    )
+            
+            // 找到对应的服装记录
+            let correctClothingId
+            if (originalClothing) {
+              const uniqueKey = `${originalClothing.code}_${originalClothing.color}_${originalClothing.size}`
+              correctClothingId = clothesIdMap.get(uniqueKey)
+            }
+            
+            // 如果找不到映射，跳过该记录
+            if (!correctClothingId) {
+              continue
+            }
+            
+            // 添加库存记录
+            await db.inventory.add({
+              clothingId: correctClothingId,
+              quantity: quantity || 0,
+              ...inventoryWithoutId,
+              updatedAt: new Date()
+            })
+            importedCount++
+          } catch (error) {
+            console.warn('跳过重复或无效的库存记录:', error)
+          }
+        }
+      }
+      
+      // 处理stockIn数据
+      if (dataToImport.stockIn && Array.isArray(dataToImport.stockIn)) {
+        for (const stockInItem of dataToImport.stockIn) {
+          try {
+            const { id, clothingId, ...stockInWithoutId } = stockInItem
+            
+            // 获取原始服装数据
+            const originalClothing = dataToImport.clothes[clothingId - 1] || 
+                                    dataToImport.clothes.find(c => 
+                                      c.id === clothingId
+                                    )
+            
+            // 找到对应的服装记录
+            let correctClothingId
+            if (originalClothing) {
+              const uniqueKey = `${originalClothing.code}_${originalClothing.color}_${originalClothing.size}`
+              correctClothingId = clothesIdMap.get(uniqueKey)
+            } else {
+              // 如果没有原始服装数据，尝试使用stockInItem中的信息查找
+              const uniqueKey = `${stockInItem.code}_${stockInItem.color}_${stockInItem.size}`
+              correctClothingId = clothesIdMap.get(uniqueKey)
+            }
+            
+            // 如果找不到映射，跳过该记录
+            if (!correctClothingId) {
+              continue
+            }
+            
+            // 添加入库记录
+            await db.stockIn.add({
+              ...stockInWithoutId,
+              clothingId: correctClothingId,
+              date: stockInItem.date || new Date()
+            })
+            importedCount++
+          } catch (error) {
+            console.warn('跳过重复或无效的入库记录:', error)
+          }
+        }
+      }
+      
+      return { success: true, importedCount }
+    } catch (error) {
+      console.error('导入数据失败:', error)
+      return { success: false, error: error.message }
+    }
+  }
+  
+  // 导入JSON备份数据
   const importData = (event) => {
     const file = event.target.files[0]
     if (!file) return
@@ -215,21 +571,14 @@ const Settings = () => {
             await db.stockOut.clear()
           }
           
-          // 移除导入数据中的id字段，并处理重复的code+color+size组合
-          const clothesWithoutIds = dataToImport.clothes.map(clothing => {
-            const { id, ...clothingWithoutId } = clothing
-            return clothingWithoutId
-          })
-          
-          // 使用Map去重，key为code+color+size的组合
-          const uniqueClothesMap = new Map()
-          clothesWithoutIds.forEach(clothing => {
-            const key = `${clothing.code}-${clothing.color}-${clothing.size}`
-            // 如果有重复，保留最后一个
-            uniqueClothesMap.set(key, clothing)
-          })
-          
-          const uniqueClothes = Array.from(uniqueClothesMap.values())
+          // 移除导入数据中的id字段，保留所有服装记录
+          // 根据用户要求，不再过滤缺少字段的记录和去重处理
+          const uniqueClothes = dataToImport.clothes
+            .filter(clothing => clothing) // 只过滤null/undefined
+            .map(clothing => {
+              const { id, ...clothingWithoutId } = clothing
+              return clothingWithoutId
+            })
           
           // 逐个添加，而不是批量添加，以更好地处理可能的冲突
           for (const clothing of uniqueClothes) {
@@ -272,28 +621,57 @@ const Settings = () => {
                 // 否则检查clothingId是否存在
                 const clothingExists = await db.clothes.get(correctClothingId)
                 if (!clothingExists) {
-                  // 如果clothingId不存在，尝试通过code+color+size查找
-                  const clothing = await db.clothes.where({ 
-                    code: inventoryItem.code, 
-                    color: inventoryItem.color, 
-                    size: inventoryItem.size 
-                  }).first()
+                  // 尝试通过code+color+size查找服装记录
+                  // 优先使用库存记录中的code+color+size
+                  let searchCriteria = null
                   
-                  if (clothing) {
-                    correctClothingId = clothing.id
+                  // 检查库存记录是否包含code+color+size
+                  if (inventoryItem.code && inventoryItem.color && inventoryItem.size) {
+                    searchCriteria = {
+                      code: inventoryItem.code,
+                      color: inventoryItem.color,
+                      size: inventoryItem.size
+                    }
                   } else {
-                    // 如果找不到对应的服装记录，跳过这个库存记录
-                    console.warn('跳过无效的库存记录，找不到对应的服装:', inventoryItem)
+                    // 否则尝试通过原服装数据查找
+                    const originalClothing = dataToImport.clothes?.find(c => c.id === clothingId)
+                    if (originalClothing && originalClothing.code && originalClothing.color && originalClothing.size) {
+                      searchCriteria = {
+                        code: originalClothing.code,
+                        color: originalClothing.color,
+                        size: originalClothing.size
+                      }
+                    }
+                  }
+                  
+                  if (searchCriteria) {
+                    // 通过code+color+size查找服装记录
+                    const clothing = await db.clothes.where(searchCriteria).first()
+                    
+                    if (clothing) {
+                      correctClothingId = clothing.id
+                    } else {
+                      // 如果找不到对应的服装记录，跳过这个库存记录
+                      console.warn('跳过无效的库存记录，找不到对应的服装:', inventoryItem)
+                      continue
+                    }
+                  } else {
+                    // 如果没有足够的信息查找服装记录，跳过这个库存记录
+                    console.warn('跳过无效的库存记录，缺少查找服装所需的信息:', inventoryItem)
                     continue
                   }
                 }
               }
               
+              // 直接添加新的库存记录，不检查是否已存在
+              // 因为在convert_excel_to_json.py中，我们为每行Excel数据创建了独立的服装记录
+              // 每个服装记录对应一个库存记录，所以不需要检查重复
               await db.inventory.add({
                 ...inventoryWithoutId,
                 clothingId: correctClothingId,
                 updatedAt: new Date()
               })
+              
               importedCount++
             } catch (error) {
               console.warn('跳过重复或无效的库存记录:', inventoryItem, error)
@@ -353,12 +731,33 @@ const Settings = () => {
                 }
               }
               
+              // 保存入库记录
               await db.stockIn.add({
                 ...stockInWithoutId,
                 clothingId: correctClothingId,
                 date: stockInItem.date || new Date()
               })
               importedCount++
+              
+              // 仅当没有导入inventory数据时，才根据stockIn数据更新库存
+              // 这样可以避免库存数量被重复计算
+              if (!dataToImport.inventory) {
+                const inventory = await db.inventory.where({ clothingId: correctClothingId }).first()
+                if (inventory) {
+                  await db.inventory.update(inventory.id, {
+                    quantity: inventory.quantity + (stockInItem.quantity || 0),
+                    updatedAt: new Date()
+                  })
+                } else {
+                  // 如果没有库存记录，创建新的
+                  await db.inventory.add({
+                    clothingId: correctClothingId,
+                    quantity: stockInItem.quantity || 0,
+                    updatedAt: new Date()
+                  })
+                }
+              }
+              
             } catch (error) {
               console.warn('跳过重复或无效的入库记录:', stockInItem, error)
             }
@@ -662,7 +1061,8 @@ const Settings = () => {
               alignItems: 'center',
               gap: '8px',
               backgroundColor: '#28a745',
-              borderColor: '#28a745'
+              borderColor: '#28a745',
+              marginRight: '12px'
             }}>
               <Upload size={16} />
               导入备份文件
@@ -674,12 +1074,42 @@ const Settings = () => {
               />
             </label>
             
+            <label className="btn btn-primary" style={{ 
+              minHeight: '44px',
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '8px',
+              backgroundColor: '#007bff',
+              borderColor: '#007bff'
+            }}>
+              <FileSpreadsheet size={16} />
+              导入Excel进货单
+              <input
+                type="file"
+                accept=".xlsx"
+                onChange={importExcelData}
+                style={{ display: 'none' }}
+              />
+            </label>
+            
             {importStatus && (
               <span style={{ 
                 color: importStatus.includes('成功') ? '#4CAF50' : '#f44336',
-                fontWeight: '500'
+                fontWeight: '500',
+                marginLeft: '16px'
               }}>
                 {importStatus}
+              </span>
+            )}
+            
+            {excelImportStatus && (
+              <span style={{ 
+                color: excelImportStatus.includes('成功') ? '#4CAF50' : '#f44336',
+                fontWeight: '500',
+                marginLeft: '16px'
+              }}>
+                {excelImportStatus}
               </span>
             )}
           </div>

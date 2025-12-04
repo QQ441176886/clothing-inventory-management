@@ -734,6 +734,7 @@ const StockIn = ({ refreshStats }) => {
                     {addedItems.map((item, index) => (
                       <li key={item.clothingId || index} style={{ marginBottom: '8px', padding: '8px', backgroundColor: '#fff', borderRadius: '4px', border: '1px solid #f0f0f0' }}>
                         {item.color}，{item.size}，数量{item.quantity}
+                        {item.clothingId && <span style={{ marginLeft: '8px', color: '#666', fontSize: '14px' }}>（ID：{item.clothingId}）</span>}
                         {item.code && <span style={{ marginLeft: '8px', color: '#666', fontSize: '14px' }}>（编码：{item.code}）</span>}
                         {item.name && <span style={{ marginLeft: '8px', color: '#666', fontSize: '14px' }}>（名称：{item.name}）</span>}
                       </li>

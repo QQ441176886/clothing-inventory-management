@@ -18,10 +18,30 @@ const ClothingManagement = ({ refreshStats }) => {
   // 从数据库加载服装数据
   const loadClothes = async () => {
     try {
-      const [allClothes, allInventory] = await Promise.all([
-        db.clothes.toArray(),
-        db.inventory.toArray()
-      ]);
+      // 先获取所有服装数据
+      const allClothes = await db.clothes.toArray();
+      
+      // 获取所有库存数据
+      let allInventory = await db.inventory.toArray();
+      
+      // 检查并为没有库存记录的服装创建库存记录
+      const clothingIdsWithInventory = new Set(allInventory.map(inv => inv.clothingId));
+      const clothesWithoutInventory = allClothes.filter(clothing => !clothingIdsWithInventory.has(clothing.id));
+      
+      if (clothesWithoutInventory.length > 0) {
+        console.log(`发现 ${clothesWithoutInventory.length} 个服装没有库存记录，正在创建...`);
+        for (const clothing of clothesWithoutInventory) {
+          await db.inventory.add({
+            clothingId: clothing.id,
+            quantity: 0,
+            updatedAt: new Date()
+          });
+        }
+        console.log('库存记录创建完成');
+        
+        // 重新加载库存数据，确保包含新创建的记录
+        allInventory = await db.inventory.toArray();
+      }
       
       // 合并服装和库存信息
       const clothesWithInventory = allClothes.map(clothing => {
@@ -56,7 +76,38 @@ const ClothingManagement = ({ refreshStats }) => {
     setIsClient(true);
     loadClothes();
     loadLowStockThreshold();
+    // 检查数据库中是否存在空记录
+    checkForEmptyRecords();
   }, []);
+
+  // 检查数据库中是否存在空记录
+  const checkForEmptyRecords = async () => {
+    try {
+      const allClothes = await db.clothes.toArray();
+      const emptyRecords = allClothes.filter(clothing => 
+        !clothing.code || clothing.code.trim() === '' ||
+        !clothing.name || clothing.name.trim() === '' ||
+        !clothing.category || clothing.category.trim() === '' ||
+        !clothing.color || clothing.color.trim() === '' ||
+        !clothing.size || clothing.size.trim() === ''
+      );
+      
+      if (emptyRecords.length > 0) {
+        console.warn('发现空服装记录:', emptyRecords);
+        // 自动删除空记录
+        for (const record of emptyRecords) {
+          await db.clothes.delete(record.id);
+          console.log('已删除空记录:', record.id);
+        }
+        // 重新加载数据
+        loadClothes();
+      } else {
+        console.log('没有发现空服装记录');
+      }
+    } catch (error) {
+      console.error('检查空记录时出错:', error);
+    }
+  };
 
   // 搜索功能
   useEffect(() => {
@@ -79,10 +130,21 @@ const ClothingManagement = ({ refreshStats }) => {
       await db.clothes.clear();
       
       // 移除导入数据中的id字段，并处理重复的code+color+size组合
-      const clothesWithoutIds = newClothes.map(clothing => {
-        const { id, ...clothingWithoutId } = clothing;
-        return clothingWithoutId;
-      });
+      // 同时过滤掉无效的服装记录（缺少code、name或category等必要字段的记录）
+      const clothesWithoutIds = newClothes
+        .filter(clothing => {
+          // 确保服装记录包含必要的字段
+          return clothing && 
+                 clothing.code && clothing.code.trim() !== '' &&
+                 clothing.name && clothing.name.trim() !== '' &&
+                 clothing.category && clothing.category.trim() !== '' &&
+                 clothing.color && clothing.color.trim() !== '' &&
+                 clothing.size && clothing.size.trim() !== '';
+        })
+        .map(clothing => {
+          const { id, ...clothingWithoutId } = clothing;
+          return clothingWithoutId;
+        });
       
       // 使用Map去重，key为code+color+size的组合
       const uniqueClothesMap = new Map();
@@ -321,25 +383,26 @@ const ClothingManagement = ({ refreshStats }) => {
             </div>
 
             <div style={{ marginBottom: '16px' }}>
-              <label style={{
-                display: 'block',
-                marginBottom: '4px',
+              <div style={{ 
+                padding: '6px 10px', 
+                backgroundColor: '#f5f5f5', 
+                borderRadius: '4px', 
+                fontSize: '14px', 
+                color: '#666', 
+                marginBottom: '8px',
                 fontWeight: '500',
-                color: '#333'
-              }}>商品编码 *</label>
+                display: 'inline-block'
+              }}>
+                商品ID：{clothing ? clothing.id : '新商品'}
+              </div>
+              <label style={{ display: 'block', marginBottom: '4px', fontWeight: '500', color: '#333' }}>商品编码 *</label>
               <input
                 type="text"
                 name="code"
                 value={formData.code}
                 onChange={handleChange}
                 placeholder="输入商品编码"
-                style={{
-                  width: '100%',
-                  padding: '8px 12px',
-                  border: '1px solid #ddd',
-                  borderRadius: '4px',
-                  fontSize: '14px'
-                }}
+                style={{ width: '100%', padding: '8px 12px', border: '1px solid #ddd', borderRadius: '4px', fontSize: '14px' }}
                 required
               />
             </div>
@@ -598,17 +661,23 @@ const ClothingManagement = ({ refreshStats }) => {
           }}
         />
       </div>
+      
+      {/* 品类总数显示 */}
+      <div style={{ marginBottom: '20px', fontSize: '14px', color: '#666' }}>
+        共 {filteredClothes.length} 个品类
+      </div>
 
       {/* 桌面端表格视图 */}
       <div className="desktop-view">
         <div className="table-header" style={{
           display: 'grid',
-          gridTemplateColumns: '1fr 1fr 1fr 1fr 1fr 1fr 1fr 100px 120px',
+          gridTemplateColumns: '80px 1fr 1fr 1fr 1fr 1fr 1fr 1fr 100px 120px',
           padding: '12px',
           backgroundColor: '#f8f9fa',
           fontWeight: 'bold',
           borderBottom: '2px solid #dee2e6'
         }}>
+          <div>ID</div>
           <div>商品图片</div>
           <div>商品编码</div>
           <div>商品名称</div>
@@ -625,7 +694,7 @@ const ClothingManagement = ({ refreshStats }) => {
             return (
               <div key={clothing.id} className="table-row" style={{
                 display: 'grid',
-                gridTemplateColumns: '1fr 1fr 1fr 1fr 1fr 1fr 1fr 100px 120px',
+                gridTemplateColumns: '80px 1fr 1fr 1fr 1fr 1fr 1fr 1fr 100px 120px',
                 padding: '12px',
                 borderBottom: '1px solid #dee2e6',
                 alignItems: 'center',
@@ -633,6 +702,7 @@ const ClothingManagement = ({ refreshStats }) => {
                   backgroundColor: '#f8f9fa'
                 }
               }}>
+                {/* 删除有颜色的ID显示 */}
                 <div>
                   {clothing.image ? (
                     <img 
@@ -663,7 +733,11 @@ const ClothingManagement = ({ refreshStats }) => {
                     </div>
                   )}
                 </div>
-                <div style={{ fontWeight: '500' }}>{clothing.code}</div>
+                <div style={{ 
+                  fontWeight: '600', 
+                  fontSize: '16px',
+                  color: '#2196F3' 
+                }}>{clothing.code}</div>
                 <div>{clothing.name}</div>
                 <div>{clothing.category}</div>
                 <div>{clothing.size}/{clothing.color}</div>
@@ -753,9 +827,16 @@ const ClothingManagement = ({ refreshStats }) => {
                   <div style={{ 
                     fontSize: '12px', 
                     color: '#666'
-                  }}>编码：{clothing.code}</div>
+                  }}>ID：{clothing.id}</div>
+                  <div style={{ 
+                fontSize: '14px', 
+                color: '#2196F3',
+                fontWeight: '600'
+              }}>编码：{clothing.code}</div>
                 </div>
               </div>
+              
+              {/* 删除有颜色的ID显示 */}
               
               {/* 详细信息网格 */}
               <div style={{

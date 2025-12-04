@@ -14,7 +14,7 @@ export class ClothingInventoryDB extends Dexie {
     })
   }
   
-  // 初始化数据库（创建一些默认数据如果数据库为空）
+  // 初始化数据库（创建必要的设置，不添加商品信息）
   async initialize() {
     try {
       // 确保settings表存在
@@ -29,45 +29,8 @@ export class ClothingInventoryDB extends Dexie {
       const clothesCount = await this.clothes.count();
       
       if (clothesCount === 0) {
-        console.log('数据库为空，创建初始示例数据...');
-        
-        // 创建一些示例服装数据
-        const initialClothes = [
-          {
-            code: 'CL001',
-            name: '休闲T恤',
-            category: '上衣',
-            size: 'M',
-            color: '白色',
-            purchasePrice: 50,
-            sellingPrice: 120,
-            createdAt: new Date().toISOString()
-          },
-          {
-            code: 'CL002',
-            name: '牛仔裤',
-            category: '裤子',
-            size: 'L',
-            color: '蓝色',
-            purchasePrice: 80,
-            sellingPrice: 200,
-            createdAt: new Date().toISOString()
-          }
-        ];
-        
-        // 添加示例服装
-        const addedClothes = await this.clothes.bulkAdd(initialClothes);
-        
-        // 为每个服装创建初始库存
-        for (let i = 0; i < addedClothes.length; i++) {
-          await this.inventory.add({
-            clothingId: addedClothes[i],
-            quantity: 50,
-            updatedAt: new Date().toISOString()
-          });
-        }
-        
-        console.log('初始数据创建完成');
+        console.log('数据库为空，初始化成功！');
+        console.log('系统已准备就绪，可以开始添加商品信息。');
       }
     } catch (error) {
       console.error('数据库初始化失败:', error);

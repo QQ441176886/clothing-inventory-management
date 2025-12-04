@@ -32,23 +32,41 @@ const Inventory = ({ refreshStats }) => {
 
   const loadInventory = async () => {
     try {
-      const [allInventory, allClothes] = await Promise.all([
-        db.inventory.toArray(),
-        db.clothes.toArray()
-      ])
+      // 先获取所有服装数据
+      const allClothes = await db.clothes.toArray()
       
-      // 合并库存和服装信息
-      const inventoryWithDetails = allInventory.map(inv => {
-        const clothing = allClothes.find(c => c.id === inv.clothingId)
-        const totalValue = clothing ? inv.quantity * clothing.purchasePrice : 0
+      // 获取所有库存数据
+      let allInventory = await db.inventory.toArray()
+      
+      // 检查并为没有库存记录的服装创建库存记录
+      const clothingIdsWithInventory = new Set(allInventory.map(inv => inv.clothingId))
+      const clothesWithoutInventory = allClothes.filter(clothing => !clothingIdsWithInventory.has(clothing.id))
+      
+      if (clothesWithoutInventory.length > 0) {
+        console.log(`发现 ${clothesWithoutInventory.length} 个服装没有库存记录，正在创建...`)
+        for (const clothing of clothesWithoutInventory) {
+          await db.inventory.add({
+            clothingId: clothing.id,
+            quantity: 0,
+            updatedAt: new Date()
+          })
+        }
+        console.log('库存记录创建完成')
+        
+        // 重新加载库存数据，确保包含新创建的记录
+        allInventory = await db.inventory.toArray()
+      }
+      
+      // 合并库存和服装信息 - 确保所有服装都显示在库存列表中
+      const inventoryWithDetails = allClothes.map(clothing => {
+        const inv = allInventory.find(inv => inv.clothingId === clothing.id)
+        // 保存原始的高精度值用于显示，避免多次四舍五入
+        const totalValue = inv ? inv.quantity * clothing.purchasePrice : 0
         return {
           ...inv,
-          clothing: clothing || {},
-          totalValue: Math.round(totalValue * 100) / 100 // 确保总价值精度
+          clothing: clothing,
+          totalValue: totalValue // 保存原始高精度值
         }
-      }).filter(item => {
-        // 过滤掉没有对应服装的库存记录
-        return item.clothing.id;
       }).sort((a, b) => {
         // 按服装编码排序
         if (a.clothing.code && b.clothing.code) {
@@ -63,7 +81,8 @@ const Inventory = ({ refreshStats }) => {
     }
   }
 
-  const filteredInventory = inventory
+  // 过滤掉库存为0的商品
+  const filteredInventory = inventory.filter(item => item.quantity > 0)
 
   const lowStockItems = filteredInventory.filter(item => item.quantity > 0 && item.quantity <= lowStockThreshold)
   const outOfStockItems = filteredInventory.filter(item => item.quantity === 0)
@@ -75,7 +94,15 @@ const Inventory = ({ refreshStats }) => {
   }
 
   const calculateTotalInventoryValue = () => {
-    return inventory.reduce((total, item) => total + item.totalValue, 0)
+    // 使用原始高精度值累加，最后统一处理精度
+    const total = inventory.reduce((sum, item) => {
+      // 只计算有实际库存（数量>0）且有有效采购价的商品
+      if (item.quantity > 0 && item.clothing.purchasePrice > 0) {
+        return sum + item.totalValue
+      }
+      return sum
+    }, 0)
+    return Math.round(total * 100) / 100
   }
 
   return (
@@ -104,7 +131,7 @@ const Inventory = ({ refreshStats }) => {
             fontWeight: '600', 
             marginBottom: '24px'
           }}>
-            库存明细 ({filteredInventory.length} 个品类)
+            库存明细 ({filteredInventory.filter(item => item.clothing.category).length} 个品类)
           </h2>
           
           {filteredInventory.length === 0 ? (
@@ -146,8 +173,9 @@ const Inventory = ({ refreshStats }) => {
                 }}>
                 <thead>
                   <tr style={{ background: '#f8f9fa' }}>
-                    <th style={{ padding: '14px 10px', fontWeight: '600', color: '#555', textAlign: 'left', borderBottom: '2px solid #e0e0e0', position: 'sticky', left: 0, background: '#f8f9fa', zIndex: 10, width: '110px', fontSize: '16px', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', lineHeight: '1.4', WebkitFontSmoothing: 'antialiased', MozOsxFontSmoothing: 'grayscale' }}>服装编码</th>
-                    <th style={{ padding: '14px 10px', fontWeight: '600', color: '#555', textAlign: 'left', borderBottom: '2px solid #e0e0e0', position: 'sticky', left: 110, background: '#f8f9fa', zIndex: 10, width: '130px', fontSize: '16px', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', lineHeight: '1.4', WebkitFontSmoothing: 'antialiased', MozOsxFontSmoothing: 'grayscale' }}>服装名称</th>
+                    <th style={{ padding: '14px 10px', fontWeight: '600', color: '#555', textAlign: 'left', borderBottom: '2px solid #e0e0e0', position: 'sticky', left: 0, background: '#f8f9fa', zIndex: 10, width: '80px', fontSize: '16px', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', lineHeight: '1.4', WebkitFontSmoothing: 'antialiased', MozOsxFontSmoothing: 'grayscale' }}>ID</th>
+                    <th style={{ padding: '14px 10px', fontWeight: '600', color: '#555', textAlign: 'left', borderBottom: '2px solid #e0e0e0', position: 'sticky', left: 80, background: '#f8f9fa', zIndex: 10, width: '110px', fontSize: '16px', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', lineHeight: '1.4', WebkitFontSmoothing: 'antialiased', MozOsxFontSmoothing: 'grayscale' }}>服装编码</th>
+                    <th style={{ padding: '14px 10px', fontWeight: '600', color: '#555', textAlign: 'left', borderBottom: '2px solid #e0e0e0', position: 'sticky', left: 190, background: '#f8f9fa', zIndex: 10, width: '130px', fontSize: '16px', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', lineHeight: '1.4', WebkitFontSmoothing: 'antialiased', MozOsxFontSmoothing: 'grayscale' }}>服装名称</th>
                     <th style={{ padding: '14px 10px', fontWeight: '600', color: '#555', textAlign: 'right', borderBottom: '2px solid #e0e0e0', width: '100px', fontSize: '16px', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', lineHeight: '1.4', WebkitFontSmoothing: 'antialiased', MozOsxFontSmoothing: 'grayscale' }}>进货价格</th>
                     <th style={{ padding: '14px 10px', fontWeight: '600', color: '#555', textAlign: 'right', borderBottom: '2px solid #e0e0e0', width: '100px', fontSize: '16px', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', lineHeight: '1.4', WebkitFontSmoothing: 'antialiased', MozOsxFontSmoothing: 'grayscale' }}>销售价格</th>
                     <th style={{ padding: '14px 10px', fontWeight: '600', color: '#555', textAlign: 'left', borderBottom: '2px solid #e0e0e0', width: '90px', fontSize: '16px', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', lineHeight: '1.4', WebkitFontSmoothing: 'antialiased', MozOsxFontSmoothing: 'grayscale' }}>品类</th>
@@ -166,8 +194,9 @@ const Inventory = ({ refreshStats }) => {
                       }}
                       onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f0f7ff'}
                       onMouseLeave={(e) => e.currentTarget.style.backgroundColor = index % 2 === 0 ? '#ffffff' : '#fafafa'}>
-                        <td style={{ padding: '14px 10px', fontWeight: '600', color: '#333', borderBottom: index < filteredInventory.length - 1 ? '2px solid #2196F3' : '1px solid #f0f0f0', position: 'sticky', left: 0, background: index % 2 === 0 ? '#ffffff' : '#fafafa', zIndex: 5, width: '110px', fontSize: '16px', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', lineHeight: '1.4', WebkitFontSmoothing: 'antialiased', MozOsxFontSmoothing: 'grayscale' }}>{item.clothing.code}</td>
-                        <td style={{ padding: '14px 10px', fontWeight: '600', color: '#333', borderBottom: index < filteredInventory.length - 1 ? '2px solid #2196F3' : '1px solid #f0f0f0', position: 'sticky', left: 110, background: index % 2 === 0 ? '#ffffff' : '#fafafa', zIndex: 5, width: '130px', fontSize: '16px', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', lineHeight: '1.4', WebkitFontSmoothing: 'antialiased', MozOsxFontSmoothing: 'grayscale' }}>{item.clothing.name}</td>
+                        <td style={{ padding: '14px 10px', fontWeight: '600', color: '#666', borderBottom: index < filteredInventory.length - 1 ? '2px solid #2196F3' : '1px solid #f0f0f0', position: 'sticky', left: 0, background: index % 2 === 0 ? '#ffffff' : '#fafafa', zIndex: 5, width: '80px', fontSize: '16px', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', lineHeight: '1.4', WebkitFontSmoothing: 'antialiased', MozOsxFontSmoothing: 'grayscale' }}>{item.clothing.id}</td>
+                        <td style={{ padding: '14px 10px', fontWeight: '600', color: '#333', borderBottom: index < filteredInventory.length - 1 ? '2px solid #2196F3' : '1px solid #f0f0f0', position: 'sticky', left: 80, background: index % 2 === 0 ? '#ffffff' : '#fafafa', zIndex: 5, width: '110px', fontSize: '16px', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', lineHeight: '1.4', WebkitFontSmoothing: 'antialiased', MozOsxFontSmoothing: 'grayscale' }}>{item.clothing.code}</td>
+                        <td style={{ padding: '14px 10px', fontWeight: '600', color: '#333', borderBottom: index < filteredInventory.length - 1 ? '2px solid #2196F3' : '1px solid #f0f0f0', position: 'sticky', left: 190, background: index % 2 === 0 ? '#ffffff' : '#fafafa', zIndex: 5, width: '130px', fontSize: '16px', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', lineHeight: '1.4', WebkitFontSmoothing: 'antialiased', MozOsxFontSmoothing: 'grayscale' }}>{item.clothing.name}</td>
                         <td style={{ padding: '14px 10px', textAlign: 'right', fontWeight: '600', color: '#666', borderBottom: index < filteredInventory.length - 1 ? '2px solid #2196F3' : '1px solid #f0f0f0', fontSize: '16px', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', lineHeight: '1.4', WebkitFontSmoothing: 'antialiased', MozOsxFontSmoothing: 'grayscale' }}>¥{item.clothing.purchasePrice.toFixed(2)}</td>
                         <td style={{ padding: '14px 10px', textAlign: 'right', fontWeight: '600', color: '#f44336', borderBottom: index < filteredInventory.length - 1 ? '2px solid #2196F3' : '1px solid #f0f0f0', fontSize: '16px', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', lineHeight: '1.4', WebkitFontSmoothing: 'antialiased', MozOsxFontSmoothing: 'grayscale' }}>¥{item.clothing.sellingPrice.toFixed(2)}</td>
                         <td style={{ padding: '14px 10px', fontWeight: '600', color: '#666', borderBottom: index < filteredInventory.length - 1 ? '2px solid #2196F3' : '1px solid #f0f0f0', fontSize: '16px', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', lineHeight: '1.4', WebkitFontSmoothing: 'antialiased', MozOsxFontSmoothing: 'grayscale' }}>{item.clothing.category}</td>
@@ -212,6 +241,10 @@ const Inventory = ({ refreshStats }) => {
                       borderBottom: index < filteredInventory.length - 1 ? '3px solid #2196F3' : 'none'
                     }}>
                       <div className="mobile-table-row">
+                        <div className="mobile-table-cell">
+                          <span className="mobile-table-label">ID</span>
+                          <span className="mobile-table-value" style={{fontWeight: '600', color: '#666'}}>{item.clothing.id}</span>
+                        </div>
                         <div className="mobile-table-cell">
                           <span className="mobile-table-label">服装编码</span>
                           <span className="mobile-table-value" style={{fontWeight: '600'}}>{item.clothing.code}</span>
@@ -344,7 +377,7 @@ const Inventory = ({ refreshStats }) => {
             <div>
               <div style={{ fontSize: '14px', color: '#666' }}>库存总价值</div>
               <div style={{ fontSize: '28px', fontWeight: '600', color: '#4CAF50' }}>
-                ¥{calculateTotalInventoryValue().toLocaleString()}
+                ¥{calculateTotalInventoryValue().toFixed(2)}
               </div>
             </div>
           </div>
